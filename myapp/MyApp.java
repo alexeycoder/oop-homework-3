@@ -1,14 +1,25 @@
-package edu.alexey.seminar3;
+package myapp;
 
-import java.beans.XMLEncoder;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
+import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.Scanner;
 import java.util.stream.Collectors;
 
-import edu.alexey.seminar3.Main.Worker;
+/* Для сериализации в XML и JSON используется библиотека XStream
+ * https://repo1.maven.org/maven2/com/thoughtworks/xstream/xstream/1.4.19/xstream-1.4.19.jar
+ * https://repo1.maven.org/maven2/org/codehaus/jettison/jettison/1.2/jettison-1.2.jar
+ * 
+ * (https://x-stream.github.io)
+ * 
+ * Стандартный java.beans.XMLEncoder генерирует неудобочитаемый XML.
+*/
+import com.thoughtworks.xstream.XStream;
+import com.thoughtworks.xstream.XStreamException;
+import com.thoughtworks.xstream.io.json.JettisonMappedXmlDriver;
+import com.thoughtworks.xstream.io.xml.DomDriver;
+
+import myapp.MyApp.Worker;
 
 // АБСТРАКЦИИ:
 
@@ -198,24 +209,27 @@ class SaveAsDialog implements Dialog {
 
 	@Override
 	public void start() {
+		printTitle();
 		askFormat();
+		printSeparator();
 	}
 
 	@Override
 	public void clickButton() {
 		if (document == null) {
-			System.out.println("Ошибка: Сперва надо выбрать тип документа.");
+			System.err.println("Ошибка: тип документа не задан.");
 			return;
 		}
+		System.out.println("Нажата кнопка сохранения.\nРезультат:\n");
 
 		button.click();
 	}
 
 	private void askFormat() {
-		System.out.println("=".repeat(40));
+		printSeparator();
 		System.out.println("Сохраняемый Worker:");
 		System.out.println(worker.toString());
-		System.out.println("=".repeat(40));
+		printSeparator();
 
 		String allowedInputsStr = Arrays.stream(DocType.values()).map(DocType::name).collect(Collectors.joining(", "));
 		String rawInput;
@@ -240,6 +254,14 @@ class SaveAsDialog implements Dialog {
 			case JSON -> new JsonDocument(worker);
 		};
 	}
+
+	private static void printTitle() {
+		System.out.println("\nДиалог Сохранения\n");
+	}
+
+	private static void printSeparator() {
+		System.out.println("=".repeat(40));
+	}
 }
 
 abstract class WorkerDocument implements Document {
@@ -259,20 +281,39 @@ class XmlDocument extends WorkerDocument {
 
 	@Override
 	public void saveAs() {
-		try (ByteArrayOutputStream os = new ByteArrayOutputStream();
-				XMLEncoder xmlEncoder = new XMLEncoder(os)) {
-			xmlEncoder.writeObject(worker);
-			xmlEncoder.flush();
-			System.out.println(os.toString());
-		} catch (IOException ex) {
+
+		try {
+			XStream xstream = new XStream(new DomDriver());
+			xstream.alias(Worker.class.getSimpleName().toLowerCase(), Worker.class);
+			String xmlStr = xstream.toXML(worker);
+			System.out.println(xmlStr);
+			System.out.println();
+
+		} catch (XStreamException e) {
 			System.err.println("Ошибка: что-то пошло не так в процессе формирования XML.");
-			System.err.println(ex.getMessage());
-			ex.printStackTrace(System.err);
+			System.err.println(e.getMessage());
+			e.printStackTrace(System.err);
+		} catch (NoClassDefFoundError e) {
+			System.err.println("Ошибка: вероятно не установлены требуемые библиотеки XStream.");
 		}
+
+		// // XMLEncoder выдаёт не очень human-readable XML
+		// try (ByteArrayOutputStream os = new ByteArrayOutputStream();
+		// XMLEncoder xmlEncoder = new XMLEncoder(os)) {
+		// xmlEncoder.writeObject(worker);
+		// xmlEncoder.flush();
+		// System.out.println(os.toString());
+		// } catch (IOException ex) {
+		// System.err.println("Ошибка: что-то пошло не так в процессе формирования
+		// XML.");
+		// System.err.println(ex.getMessage());
+		// ex.printStackTrace(System.err);
+		// }
 	}
 }
 
 class MdDocument extends WorkerDocument {
+	private static final String GETTER_TOKEN = "get";
 
 	public MdDocument(Worker worker) {
 		super(worker);
@@ -280,7 +321,27 @@ class MdDocument extends WorkerDocument {
 
 	@Override
 	public void saveAs() {
-		System.out.printf("Типа вывожу в MD %d %d %s\n", worker.getAge(), worker.getSalary(), worker.getName());
+		var getters = Arrays.stream(worker.getClass().getDeclaredMethods()).filter(MdDocument::isGetter).toList();
+		StringBuilder sb = new StringBuilder(worker.getClass().getSimpleName()).append(":\n");
+		for (var getter : getters) {
+			var propName = getter.getName().substring(GETTER_TOKEN.length());
+			Object propValue = null;
+			try {
+				propValue = getter.invoke(worker);
+			} catch (Exception e) {
+				propValue = "не удалось прочитать значение свойства";
+			}
+			sb.append("* _").append(propName).append("_: ")
+					.append(propValue.toString()).append("\n");
+		}
+		System.out.println(sb.toString());
+	}
+
+	private static boolean isGetter(Method method) {
+		return method.getName().startsWith(GETTER_TOKEN)
+				&& method.getName().length() > GETTER_TOKEN.length()
+				&& method.getParameterTypes().length == 0
+				&& !Void.class.equals(method.getReturnType());
 	}
 }
 
@@ -291,6 +352,20 @@ class JsonDocument extends WorkerDocument {
 
 	@Override
 	public void saveAs() {
-		System.out.printf("Типа вывожу в JSON %d %d %s\n", worker.getAge(), worker.getSalary(), worker.getName());
+		try {
+			XStream xstream = new XStream(new JettisonMappedXmlDriver());
+			xstream.setMode(XStream.NO_REFERENCES);
+			xstream.alias(Worker.class.getSimpleName().toLowerCase(), Worker.class);
+			String jsonStr = xstream.toXML(worker);
+			System.out.println(jsonStr);
+			System.out.println();
+
+		} catch (XStreamException e) {
+			System.err.println("Ошибка: что-то пошло не так в процессе формирования JSON.");
+			System.err.println(e.getMessage());
+			e.printStackTrace(System.err);
+		} catch (NoClassDefFoundError e) {
+			System.err.println("Ошибка: вероятно не установлены требуемые библиотеки XStream.");
+		}
 	}
 }
